@@ -1,0 +1,346 @@
+---
+title: "GPS_peng_mapping"
+author: "Taylor Azizeh"
+date: "2025-02-16"
+output: html_document
+---
+
+############################################################################################################
+*Title*: Plotting and animation for foraging emperor penguin GPS tracks
+*Author*: Taylor Azizeh
+*Date*: 29 May 2025
+*Description*: This code takes GPS tracks (interpolated to five minute intervals) of foraging emperor penguins off Cape Crozier, Antarctica, and creates track plots, as well as animations that can be exported as .gifs for science communication or presentations. For this code, I downloaded and loaded in the International Bathymetric Chart of the Southern Ocean (IBSCO) bathymetry and sea ice rasters (https://ibcso.org/current_version/). For your study system, you're going to want to find a bathymetric raster.
+*Contact*: taylorazizeh@gmail.com
+
+############################################################################################################
+
+## Step 1: Load and clean data.
+
+```{r}
+# Read in libraries
+library(data.table) # for reading in data
+library(sf) # for dealing with spatial objects
+library(ggplot2) # for mapping
+library(rnaturalearth) # for mapping
+library(dplyr) # for moving data around
+library(ggspatial)
+library(terra)
+library(transformr)
+library(raster)
+```
+
+```{r}
+# Read in GPS points
+gps <- read.csv('/Users/taylorazizeh/Documents/research/active/Emperor penguins/data/cleaned/gps interpolated/fixed timestamps/cleaned_GPS_data_all_years.csv')
+head(gps)
+```
+
+```{r}
+# Create a spatial object from the GPS points
+gps_sf <- st_as_sf(gps, coords = c("Lon","Lat"), crs = 4326)
+
+# Check out imported data
+summary(gps_sf)
+st_crs(gps_sf)  # The CRS for these points is EPSG: 3031 or Antarctic Polar Stereographic
+```
+
+## Step 2: Prep and load in bathymetry and ice data.
+``` {r}
+# Load IBCSO bathymetry raster
+ibcso_bedrock_path <- "/Users/taylorazizeh/Documents/research/active/Emperor penguins/data/cleaned/bathymetry/IBCSO_v2_bed_RGB.tif" 
+ibcso_ice_path <- "/Users/taylorazizeh/Documents/research/active/Emperor penguins/data/cleaned/bathymetry/IBCSO_v2_ice-surface_RGB.tif"
+
+# Convert to a raster
+ibcso_bedrock <- rast(ibcso_bedrock_path)
+ibcso_ice <- rast(ibcso_ice_path)
+
+# Define region of interest
+xmin <- -100000
+xmax <- 500000
+ymin <- -1550000
+
+ymax <- -1250000
+extent_of_interest <- ext(xmin, xmax, ymin, ymax)
+
+# Crop bathymetry and ice rasters
+ibcso_bedrock_cropped <- crop(ibcso_bedrock, extent_of_interest)
+ibcso_ice_cropped <- crop(ibcso_ice, extent_of_interest)
+
+# Convert bathymetry raster to data frame for ggplot
+bedrock_df <- as.data.frame(ibcso_bedrock_cropped, xy = TRUE) %>%
+  mutate(color = rgb(
+    IBCSO_v2_bed_RGB_1 / 255,
+    IBCSO_v2_bed_RGB_2 / 255,
+    IBCSO_v2_bed_RGB_3 / 255
+  ))
+
+# Convert ice raster to data frame for ggplot
+ice_df <- as.data.frame(ibcso_ice_cropped, xy = TRUE) %>%
+  mutate(color = rgb(
+    `IBCSO_v2_ice-surface_RGB_1` / 255,
+    `IBCSO_v2_ice-surface_RGB_2` / 255,
+    `IBCSO_v2_ice-surface_RGB_3` / 255
+  ))
+```
+
+## Step 3: Format and clean GPS tracks and create plot.
+
+```{r}
+# Remove birds with none or little GPS data from dataset
+gps_no10c_08c <- gps %>%
+  filter(!(ID %in% c("22EP_310c", "22EP_308c")))
+
+# Convert penguin data to sf object (WGS84)
+pen_data_sf <- st_as_sf(
+  gps_no10c_08c,
+  coords = c("Lon", "Lat"),
+  crs = 4326
+)
+
+# Transform penguin data to match IBCSO CRS
+pen_data_sf <- st_transform(pen_data_sf, crs(ibcso_bedrock_cropped))
+
+# Color blind friendly
+cb_palette_no_blues <- c(
+  "#000000",  # black
+  "#E69F00",  # orange
+  "#009E73",  # bluish green (ok over blue background)
+  "#F0E442",  # yellow
+  "#D55E00",  # vermilion
+  "#CC79A7",  # reddish purple
+  "#999999",  # gray
+  "#A65628",  # brown
+  "#FF7F00",  # vivid orange
+  "#984EA3",  # purple
+  "#4DAF4A",  # medium green
+  "#F781BF",  # pink
+  "#999933",  # olive
+  "#E41A1C",  # red
+  "#FC8D62",  # salmon
+  "#66C2A5",  # sea green
+  "#E78AC3",  # light magenta
+  "#A6D854",  # lime green
+  "#FFD92F",  # gold
+  "#E5C494",  # beige
+  "#B15928",  # dark brown
+  "#FB9A99",  # light pink
+  "#CAB2D6",  # lavender
+  "#FFFF99",  # pale yellow
+  "#B2DF8A"   # soft green
+)
+
+# Convert back to data frame for ggplot
+pen_data_transformed <- pen_data_sf %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  bind_cols(pen_data_sf %>% st_drop_geometry()) %>%
+  rename(x = X, y = Y)
+
+# Plotting
+fig1 <- ggplot() +
+  
+  # Add bathymetry raster
+  geom_raster(
+    data = bedrock_df,
+    aes(x = x, y = y, fill = color),
+    show.legend = FALSE
+  ) +
+  scale_fill_identity() +
+  
+  # Add ice raster with transparency
+  geom_raster(
+    data = ice_df,
+    aes(x = x, y = y, fill = color),
+    alpha = 0.7,
+    show.legend = FALSE
+  ) +
+  
+  # Add penguin tracks, color-coded by ID
+  geom_point(
+    data = pen_data_transformed,
+    aes(x = x, y = y, color = ID),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  scale_color_manual(values = setNames(cb_palette_no_blues, sort(unique(pen_data_transformed$ID)))) +
+
+  # Add scale bar and north arrow
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  annotation_north_arrow(location = "tl",
+                         style = north_arrow_orienteering(),
+                         height = unit(1.0, "cm"),
+                         width = unit(1.0, "cm"),
+                         pad_x = unit(0.25, "cm"),
+                         pad_y = unit(0.25, "cm")) +
+  
+  # Add titles and labels
+  labs(
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  
+  # Coordinate system and theme
+  coord_sf(crs = st_crs(ibcso_bedrock_cropped), expand = FALSE) +
+  theme_bw(base_size = 14) +
+  theme(legend.text = element_text(size = 7),
+        legend.title = element_text(size = 10),
+        legend.key.width = unit(0.05, "lines"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 8)) +
+  guides(color = guide_legend(ncol = 2,
+    override.aes = list(shape = 16, size = 3, alpha = 1)
+  ))
+
+print(fig1)
+
+# Save Figure 1
+# ggsave(fig1, 
+#        filename = "RMap.jpeg",
+#        device = "jpeg",
+#        path = "/Users/taylorazizeh/Documents/research/active/Emperor penguins/figures/tracks",
+#        height = 5, width = 7, units = "in")
+```
+
+## Step 4: Create gif of animal movement.
+
+```{r}
+# Ensure you retain timestamp & year info
+gps_clean <- gps_no10c_08c %>%
+  mutate(
+    Timestamp = as.POSIXct(Timestamp),
+    Year = year(Timestamp)
+  )
+
+# Transform to sf, then to projected coords
+pen_data_sf <- st_as_sf(gps_clean, coords = c("Lon", "Lat"), crs = 4326)
+pen_data_sf <- st_transform(pen_data_sf, crs(ibcso_bedrock_cropped))
+
+# Keep coords + metadata
+pen_data_transformed <- pen_data_sf %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  bind_cols(pen_data_sf %>% st_drop_geometry()) %>%
+  rename(x = X, y = Y)
+
+# Filter to 2019
+pen_2019 <- pen_data_transformed %>% filter(Year == 2019)
+
+# Set up IDs for plotting
+pen_2019$ID <- factor(pen_2019$ID, levels = sort(unique(pen_2019$ID)))
+
+# Plot: 2019 penguin tracks
+fig_2019 <- ggplot() +
+  geom_raster(data = bedrock_df, aes(x = -x, y = -y, fill = color), show.legend = FALSE) +
+  scale_fill_identity() +
+  geom_raster(data = ice_df, aes(x = -x, y = -y, fill = color), alpha = 0.7, show.legend = FALSE) +
+  geom_path(data = pen_2019, aes(x = -x, y = -y, group = ID, color = ID), linewidth = 0.5, alpha = 0.8) +
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  annotation_north_arrow(location = "tr", style = north_arrow_orienteering()) +
+  labs(
+    title = "2019 Penguin Tracks",
+    x = "Projected X (meters)", y = "Projected Y (meters)"
+  ) +
+  coord_sf(crs = st_crs(ibcso_bedrock_cropped), expand = FALSE) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  guides(color = guide_legend(ncol = 2)) +
+  scale_color_manual(values = setNames(cb_palette_no_blues, sort(unique(pen_2019$ID))))
+
+# Save or print
+# ggsave("figure_2019.jpeg", fig_2019, width = 7, height = 5, units = "in", dpi = 300)
+
+anim_2019 <- ggplot() +
+  geom_raster(data = bedrock_df, aes(x = -x, y = -y, fill = color), show.legend = FALSE) +
+  scale_fill_identity() +
+  geom_raster(data = ice_df, aes(x = -x, y = -y, fill = color), alpha = 0.7, show.legend = FALSE) +
+  geom_path(
+    data = pen_2019,
+    aes(x = -x, y = -y, group = ID, color = ID),
+    linewidth = 1,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = setNames(cb_palette_no_blues, sort(unique(pen_2019$ID)))) +
+  coord_sf(crs = st_crs(ibcso_bedrock_cropped), expand = FALSE) +
+  labs(
+    title = "Emperor penguin movement\n{format(frame_time, '%b %d, %Y')}",
+    x = "Latitude",
+    y = "Longitude"
+  ) +
+  transition_time(Timestamp) +  # instead of transition_reveal
+  ease_aes("linear") +
+  theme_minimal(base_size = 14)
+
+# Render the animation
+anim_2019 <- gganimate::animate(anim, renderer = gifski_renderer(), fps = 10, width = 800, height = 600, nframes = 150)
+
+# Preview
+anim_2019
+
+# Export
+# anim_save(filename = "/Users/taylorazizeh/Documents/research/active/Emperor penguins/figures/penguin_tracks_2019.gif", animation = anim_2019)
+```
+
+```{r}
+# Transform to sf, then to projected coords
+pen_data_sf <- st_as_sf(gps_clean, coords = c("Lon", "Lat"), crs = 4326)
+pen_data_sf <- st_transform(pen_data_sf, crs(ibcso_bedrock_cropped))
+
+# Keep coords + metadata
+pen_data_transformed <- pen_data_sf %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  bind_cols(pen_data_sf %>% st_drop_geometry()) %>%
+  rename(x = X, y = Y)
+
+# Filter to 2019
+pen_2022 <- pen_data_transformed %>% filter(Year == 2022)
+
+# Plot: 2019 penguin tracks
+fig_2022 <- ggplot() +
+  geom_raster(data = bedrock_df, aes(x = -x, y = -y, fill = color), show.legend = FALSE) +
+  scale_fill_identity() +
+  geom_raster(data = ice_df, aes(x = -x, y = -y, fill = color), alpha = 0.7, show.legend = FALSE) +
+  geom_path(data = pen_2019, aes(x = -x, y = -y, group = ID, color = ID), linewidth = 0.5, alpha = 0.8) +
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  annotation_north_arrow(location = "tr", style = north_arrow_orienteering()) +
+  labs(
+    title = "2022 Penguin Tracks",
+    x = "Longitude", y = "Latitude"
+  ) +
+  coord_sf(crs = st_crs(ibcso_bedrock_cropped), expand = FALSE) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  guides(color = guide_legend(ncol = 2))
+
+# Save or print
+# ggsave("figure_2022.jpeg", fig_2022, width = 7, height = 5, units = "in", dpi = 300)
+
+anim_2022  <- ggplot() +
+  geom_raster(data = bedrock_df, aes(x = -x, y = -y, fill = color), show.legend = FALSE) +
+  scale_fill_identity() +
+  geom_raster(data = ice_df, aes(x = -x, y = -y, fill = color), alpha = 0.7, show.legend = FALSE) +
+  geom_path(
+    data = pen_2022,
+    aes(x = -x, y = -y, group = ID, color = ID),
+    linewidth = 1,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = setNames(cb_palette_no_blues, sort(unique(pen_2022$ID)))) +
+  coord_sf(crs = st_crs(ibcso_bedrock_cropped), expand = FALSE) +
+  labs(
+    title = "Emperor penguin movement",
+    x = "Latitude",
+    y = "Longitude"
+  ) +
+  transition_reveal(Timestamp) +
+  ease_aes("linear") +
+  theme_minimal(base_size = 14)
+
+# Render the animation
+anim_2022 <- gganimate::animate(anim, renderer = gifski_renderer(), fps = 10, width = 800, height = 600, nframes = 150)
+
+# Save optional
+anim_save(filename = "/Users/taylorazizeh/Documents/research/active/Emperor penguins/figures/penguin_tracks_2022.gif", animation = anim_2022)
+```
+
+
